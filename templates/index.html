@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Bolometer Pipeline — Live Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f5f6fa; color: #222; }
+
+    nav {
+      background: #1a1a2e;
+      padding: 14px 40px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    nav .logo { color: #fff; font-size: 18px; font-weight: 700; }
+    nav .logo span { color: #00d4aa; }
+
+    .hero {
+      background: linear-gradient(135deg, #1a1a2e, #0f3460);
+      color: #fff;
+      padding: 60px 40px;
+      text-align: center;
+    }
+    .hero .badge {
+      display: inline-block;
+      background: rgba(0,212,170,0.15);
+      color: #00d4aa;
+      border: 1px solid #00d4aa;
+      padding: 5px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+    .hero h1 { font-size: 36px; font-weight: 800; margin-bottom: 14px; }
+    .hero h1 span { color: #00d4aa; }
+    .hero p { font-size: 16px; color: #aab4c8; max-width: 560px; margin: 0 auto; line-height: 1.6; }
+
+    .upload-section {
+      max-width: 700px;
+      margin: 50px auto;
+      padding: 0 20px;
+      text-align: center;
+    }
+
+    .upload-box {
+      background: #fff;
+      border: 2px dashed #00d4aa;
+      border-radius: 14px;
+      padding: 50px 30px;
+      text-align: center;
+    }
+    .upload-box .icon { font-size: 48px; margin-bottom: 16px; }
+    .upload-box h3 { font-size: 18px; font-weight: 700; color: #1a1a2e; margin-bottom: 8px; }
+    .upload-box p { font-size: 14px; color: #888; margin-bottom: 20px; }
+
+    .btn-upload {
+      background: #00d4aa;
+      color: #1a1a2e;
+      padding: 12px 28px;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 15px;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-upload:hover { background: #00b894; }
+
+    .preview-box {
+      margin-top: 20px;
+      display: none;
+      text-align: center;
+    }
+    .preview-box img {
+      max-width: 100%;
+      max-height: 200px;
+      border-radius: 8px;
+      border: 2px solid #e8eaf0;
+    }
+    .preview-box p { font-size: 13px; color: #888; margin-top: 8px; }
+
+    .btn-process {
+      display: none;
+      margin: 20px auto 0;
+      background: #1a1a2e;
+      color: #fff;
+      padding: 14px 40px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 16px;
+      border: none;
+      cursor: pointer;
+      width: 100%;
+    }
+    .btn-process:hover { background: #0f3460; }
+
+    .loading {
+      display: none;
+      text-align: center;
+      padding: 40px;
+    }
+    .spinner {
+      width: 48px;
+      height: 48px;
+      border: 4px solid #e8eaf0;
+      border-top: 4px solid #00d4aa;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading p { color: #888; font-size: 15px; }
+
+    .results {
+      display: none;
+      max-width: 1100px;
+      margin: 0 auto 60px;
+      padding: 0 20px;
+    }
+    .results h2 { font-size: 24px; font-weight: 800; color: #1a1a2e; margin-bottom: 6px; text-align: center; }
+    .results .sub { text-align: center; color: #888; font-size: 14px; margin-bottom: 30px; }
+
+    .composite-wrap {
+      background: #1a1a2e;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 30px;
+    }
+    .composite-wrap img { width: 100%; border-radius: 8px; display: block; }
+
+    .stage-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 30px;
+    }
+    .stage-card { background: #fff; border-radius: 10px; overflow: hidden; border: 1px solid #e8eaf0; }
+    .stage-card img { width: 100%; display: block; }
+    .stage-card .stage-label { padding: 10px; text-align: center; font-size: 12px; font-weight: 700; color: #1a1a2e; letter-spacing: 1px; }
+    .stage-card .stage-tag { display: block; text-align: center; font-size: 11px; color: #00b894; padding-bottom: 10px; }
+
+    .detection-summary { background: #1a1a2e; border-radius: 12px; padding: 24px; color: #fff; margin-bottom: 30px; }
+    .detection-summary h3 { font-size: 18px; color: #00d4aa; margin-bottom: 16px; }
+    .det-list { display: flex; flex-wrap: wrap; gap: 12px; }
+    .det-item { background: rgba(0,212,170,0.1); border: 1px solid #00d4aa; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600; }
+    .det-item .det-label { color: #00d4aa; }
+    .det-item .det-conf { color: #aab4c8; font-size: 12px; }
+    .no-detection { color: #aab4c8; font-size: 14px; }
+
+    .btn-reset {
+      display: block;
+      margin: 0 auto;
+      background: transparent;
+      color: #1a1a2e;
+      padding: 12px 30px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 15px;
+      border: 2px solid #1a1a2e;
+      cursor: pointer;
+    }
+    .btn-reset:hover { background: #1a1a2e; color: #fff; }
+
+    .how-section { background: #fff; padding: 60px 40px; border-top: 1px solid #eee; }
+    .how-section h2 { font-size: 24px; font-weight: 800; color: #1a1a2e; text-align: center; margin-bottom: 8px; }
+    .how-section .sub { text-align: center; color: #888; font-size: 14px; margin-bottom: 36px; }
+    .how-grid { display: flex; justify-content: center; max-width: 900px; margin: 0 auto; flex-wrap: wrap; }
+    .how-step { display: flex; flex-direction: column; align-items: center; text-align: center; width: 160px; padding: 10px; }
+    .how-step .num { width: 44px; height: 44px; background: #00d4aa; color: #1a1a2e; border-radius: 50%; font-weight: 800; font-size: 16px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+    .how-step h4 { font-size: 13px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+    .how-step p { font-size: 12px; color: #888; line-height: 1.4; }
+    .how-arrow { font-size: 24px; color: #00d4aa; align-self: center; margin-bottom: 20px; }
+
+    footer { background: #1a1a2e; color: #aab4c8; text-align: center; padding: 28px; font-size: 13px; }
+  </style>
+</head>
+<body>
+<nav>
+  <div class="logo">Bolometer<span>AI</span></div>
+  <a href="https://github.com/16701012024rash/bolometer-pipeline" target="_blank" style="color:#ccc; text-decoration:none; font-size:14px;">GitHub</a>
+</nav>
+
+<div class="hero">
+  <div class="badge">LIVE DEMO</div>
+  <h1>AI-Enhanced <span>Thermal</span> Pipeline</h1>
+  <p>Upload any image — the pipeline converts it to thermal, processes it through 4 AI stages and detects objects automatically.</p>
+</div>
+
+<div class="upload-section" id="uploadSection">
+  <div class="upload-box">
+    <div class="icon">🌡️</div>
+    <h3>Upload Any Image</h3>
+    <p>JPG, PNG, BMP — any photo works<br/>It will be converted to thermal automatically</p>
+    <label for="fileInput" class="btn-upload" style="display:inline-block; cursor:pointer;">
+      Choose Image
+    </label>
+    <input type="file" id="fileInput" accept="image/*" style="display:none;"/>
+  </div>
+
+  <div class="preview-box" id="previewBox">
+    <img id="previewImg" src="" alt="Preview"/>
+    <p id="previewName"></p>
+  </div>
+
+  <button class="btn-process" id="processBtn">
+    🔥 Run Thermal Pipeline
+  </button>
+</div>
+
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <p>Running pipeline: Calibration → Processing → AI Enhancement → Detection...</p>
+</div>
+
+<div class="results" id="results">
+  <h2>Pipeline Results</h2>
+  <div class="sub">All 5 stages processed in real time</div>
+
+  <div class="composite-wrap">
+    <img id="compositeImg" src="" alt="Pipeline composite"/>
+  </div>
+
+  <div class="stage-grid">
+    <div class="stage-card">
+      <img id="stageRaw" src="" alt="Raw"/>
+      <div class="stage-label">RAW</div>
+      <span class="stage-tag">Thermal conversion</span>
+    </div>
+    <div class="stage-card">
+      <img id="stageCal" src="" alt="Calibrated"/>
+      <div class="stage-label">CALIBRATED</div>
+      <span class="stage-tag">NUC correction</span>
+    </div>
+    <div class="stage-card">
+      <img id="stageProc" src="" alt="Processed"/>
+      <div class="stage-label">PROCESSED</div>
+      <span class="stage-tag">Bilateral + CLAHE</span>
+    </div>
+    <div class="stage-card">
+      <img id="stageEnh" src="" alt="Enhanced"/>
+      <div class="stage-label">AI ENHANCED</div>
+      <span class="stage-tag">2x Super Resolution</span>
+    </div>
+    <div class="stage-card">
+      <img id="stageDet" src="" alt="Detections"/>
+      <div class="stage-label">DETECTIONS</div>
+      <span class="stage-tag">Object detection</span>
+    </div>
+  </div>
+
+  <div class="detection-summary">
+    <h3 id="detTitle">Objects Detected</h3>
+    <div class="det-list" id="detList"></div>
+  </div>
+
+  <button class="btn-reset" id="resetBtn">Try Another Image</button>
+</div>
+
+<div class="how-section">
+  <h2>How It Works</h2>
+  <div class="sub">Your image flows through 4 AI stages in seconds</div>
+  <div class="how-grid">
+    <div class="how-step"><div class="num">1</div><h4>Calibration</h4><p>Converts image to thermal data with NUC correction</p></div>
+    <div class="how-arrow">→</div>
+    <div class="how-step"><div class="num">2</div><h4>Processing</h4><p>Removes noise with bilateral filter and CLAHE</p></div>
+    <div class="how-arrow">→</div>
+    <div class="how-step"><div class="num">3</div><h4>AI Enhancement</h4><p>Neural network upscales 2x with learned sharpening</p></div>
+    <div class="how-arrow">→</div>
+    <div class="how-step"><div class="num">4</div><h4>Detection</h4><p>Finds persons, vehicles and animals automatically</p></div>
+  </div>
+</div>
+
+<footer>
+  AI-Enhanced Bolometer Array Pipeline &nbsp;·&nbsp; Built with Python, OpenCV and Flask
+</footer>
+
+<script>
+  var selectedFile = null;
+
+  document.getElementById('fileInput').onchange = function() {
+    var file = this.files[0];
+    if (!file) return;
+    selectedFile = file;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      document.getElementById('previewImg').src = e.target.result;
+      document.getElementById('previewName').textContent = file.name + ' (' + Math.round(file.size/1024) + ' KB)';
+      document.getElementById('previewBox').style.display = 'block';
+      document.getElementById('processBtn').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+  };
+
+  document.getElementById('processBtn').onclick = function() {
+    if (!selectedFile) return;
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('processBtn').style.display = 'none';
+    document.getElementById('loading').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+    var formData = new FormData();
+    formData.append('image', selectedFile);
+
+    fetch('/process', { method: 'POST', body: formData })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) { alert('Error: ' + data.error); return; }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('uploadSection').style.display = 'none';
+      var resultsEl = document.getElementById('results');
+      resultsEl.style.display = 'block';
+      document.getElementById('compositeImg').src = 'data:image/png;base64,' + data.composite;
+      document.getElementById('stageRaw').src = 'data:image/png;base64,' + data.stages.raw;
+      document.getElementById('stageCal').src = 'data:image/png;base64,' + data.stages.calibrated;
+      document.getElementById('stageProc').src = 'data:image/png;base64,' + data.stages.processed;
+      document.getElementById('stageEnh').src = 'data:image/png;base64,' + data.stages.enhanced;
+      document.getElementById('stageDet').src = 'data:image/png;base64,' + data.stages.detections;
+      var detList = document.getElementById('detList');
+      var detTitle = document.getElementById('detTitle');
+      detList.innerHTML = '';
+      if (data.count === 0) {
+        detTitle.textContent = 'No Objects Detected';
+        detList.innerHTML = '<span class="no-detection">No significant thermal objects found.</span>';
+      } else {
+        detTitle.textContent = data.count + ' Object' + (data.count > 1 ? 's' : '') + ' Detected';
+        data.detections.forEach(function(det) {
+          var item = document.createElement('div');
+          item.className = 'det-item';
+          item.innerHTML = '<div class="det-label">' + det.label + '</div><div class="det-conf">Confidence: ' + det.confidence + '</div>';
+          detList.appendChild(item);
+        });
+      }
+      setTimeout(function() { resultsEl.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
+    })
+    .catch(function() { alert('Something went wrong. Please try again.'); });
+  };
+
+  document.getElementById('resetBtn').onclick = function() {
+    selectedFile = null;
+    document.getElementById('uploadSection').style.display = 'block';
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('previewBox').style.display = 'none';
+    document.getElementById('processBtn').style.display = 'none';
+    document.getElementById('fileInput').value = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+</script>
+
+</body>
+</html>
