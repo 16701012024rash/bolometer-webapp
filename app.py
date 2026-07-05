@@ -214,15 +214,19 @@ def run_pipeline(image_bytes):
 
     raw = to_thermal(gray)
     raw_colored = apply_colormap(raw)
+    print(f"[debug] raw        min={raw.min():.4f} max={raw.max():.4f} mean={raw.mean():.4f}")
 
     calibrated = calibrate(raw)
     cal_colored = apply_colormap(calibrated)
+    print(f"[debug] calibrated min={calibrated.min():.4f} max={calibrated.max():.4f} mean={calibrated.mean():.4f}")
 
     processed = deterministic_process(calibrated)
     proc_colored = apply_colormap(processed)
+    print(f"[debug] processed  min={processed.min():.4f} max={processed.max():.4f} mean={processed.mean():.4f}")
 
     enhanced = ai_enhance(processed)
     enh_colored = apply_colormap(enhanced)
+    print(f"[debug] enhanced   min={enhanced.min():.4f} max={enhanced.max():.4f} mean={enhanced.mean():.4f}")
 
     # Pass original gray for Haar detection
     detections = detect_objects(enhanced, gray)
