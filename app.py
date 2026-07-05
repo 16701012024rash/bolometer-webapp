@@ -1,5 +1,7 @@
 """
 Bolometer Pipeline - Flask Web App
+Upgraded with Haar Cascade face + body detection
+(fixed: safe cascade loading so a missing XML can't crash the request)
 """
 
 from flask import Flask, request, jsonify, render_template
@@ -7,9 +9,43 @@ import numpy as np
 import cv2
 import base64
 import os
+import traceback
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
+
+
+LOCAL_CASCADE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cascades")
+
+def load_cascade(filename):
+    """Load a Haar cascade safely. Checks a local ./cascades folder first
+    (useful when cv2's bundled data folder is empty, e.g. on some
+    Python 3.14 opencv-python wheels), then falls back to cv2's built-in
+    data dir. Returns None if the file is missing or the classifier
+    fails to load, instead of raising / leaving the name undefined."""
+    candidates = [
+        os.path.join(LOCAL_CASCADE_DIR, filename),
+        cv2.data.haarcascades + filename,
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            clf = cv2.CascadeClassifier(path)
+            if not clf.empty():
+                return clf
+            print(f"[cascade] found but failed to load, skipping: {path}")
+    print(f"[cascade] not found in any location, skipping: {filename}")
+    return None
+
+
+# Load OpenCV built-in detectors individually so one missing/broken file
+# (e.g. haarcascade_car.xml, which is NOT bundled with pip's opencv-python)
+# doesn't take the others down with it.
+face_cascade = load_cascade('haarcascade_frontalface_default.xml')
+eye_cascade = load_cascade('haarcascade_eye.xml')
+body_cascade = load_cascade('haarcascade_fullbody.xml')
+upper_body_cascade = load_cascade('haarcascade_upperbody.xml')
+car_cascade = load_cascade('haarcascade_car.xml')  # will be None on stock opencv-python
+
 
 def to_thermal(img_gray):
     return img_gray.astype(np.float32) / 255.0
@@ -38,76 +74,104 @@ def ai_enhance(frame):
     result = clahe.apply(sharpened)
     return result.astype(np.float32) / 255.0
 
-def detect_objects(frame):
-    u8 = (frame * 255).clip(0, 255).astype(np.uint8)
-    H, W = u8.shape
+def detect_objects(frame, original_gray):
+    """
+    Smart detection using:
+    1. Haar Cascades for faces, bodies, cars (accurate) - each guarded
+       individually so a missing cascade just skips that detector.
+    2. Thermal contours as fallback for other objects
+    """
+    H, W = frame.shape
     detections = []
-    all_bboxes = []
-    all_confs = []
+    detected_regions = []
 
-    mean_val = float(u8.mean())
+    scaled_gray = cv2.resize(original_gray, (W, H))
 
-    for thresh_pct in [1.20, 1.30]:
-        thresh_val = min(int(mean_val * thresh_pct), 254)
-        _, binary = cv2.threshold(u8, thresh_val, 255, cv2.THRESH_BINARY)
+    def overlaps(x, y, w, h):
+        for (fx, fy, fw, fh) in detected_regions:
+            if abs(x - fx) < fw and abs(y - fy) < fh:
+                return True
+        return False
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
-        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
-
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 500:
-                continue
-
-            x, y, w, h = cv2.boundingRect(cnt)
-            if w > W * 0.85 or h > H * 0.85:
-                continue
-
-            hull = cv2.convexHull(cnt)
-            hull_area = cv2.contourArea(hull)
-            solidity = area / (hull_area + 1e-6)
-            aspect = w / (h + 1e-6)
-
-            if solidity < 0.3 or aspect > 10:
-                continue
-
-            roi = frame[y:y+h, x:x+w]
-            thermal_contrast = (roi.mean() - frame.mean()) / (frame.mean() + 1e-6)
-            conf = float(np.clip(solidity * 0.5 + thermal_contrast * 0.5, 0, 1))
-
-            if conf < 0.35:
-                continue
-
-            if aspect < 0.85 and area > 2000:
-                label = "Person"
-                color = (0, 255, 128)
-            elif aspect > 1.5 and area > 5000:
-                label = "Vehicle"
-                color = (0, 128, 255)
-            elif 1000 < area < 4000:
-                label = "Animal"
-                color = (255, 200, 0)
-            else:
-                label = "Object"
-                color = (200, 0, 255)
-
-            all_bboxes.append([x, y, w, h])
-            all_confs.append(conf)
+    # ── 1. Face Detection (most accurate) ────────────────────────────────
+    if face_cascade is not None:
+        faces = face_cascade.detectMultiScale(
+            scaled_gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20)
+        )
+        for (x, y, w, h) in faces:
             detections.append({
-                "bbox": [x, y, w, h],
-                "label": label,
-                "confidence": round(conf, 2),
-                "color": color
+                "bbox": [int(x), int(y), int(w), int(h)],
+                "label": "Person",
+                "confidence": 0.92,
+                "color": (0, 255, 128)
+            })
+            detected_regions.append((x, y, w, h))
+
+    # ── 2. Upper Body Detection ───────────────────────────────────────────
+    if upper_body_cascade is not None:
+        upper_bodies = upper_body_cascade.detectMultiScale(
+            scaled_gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30)
+        )
+        for (x, y, w, h) in upper_bodies:
+            if not overlaps(x, y, w, h):
+                detections.append({
+                    "bbox": [int(x), int(y), int(w), int(h)],
+                    "label": "Person",
+                    "confidence": 0.82,
+                    "color": (0, 255, 128)
+                })
+                detected_regions.append((x, y, w, h))
+
+    # ── 3. Full Body Detection ────────────────────────────────────────────
+    if body_cascade is not None:
+        bodies = body_cascade.detectMultiScale(
+            scaled_gray, scaleFactor=1.05, minNeighbors=3, minSize=(30, 60)
+        )
+        for (x, y, w, h) in bodies:
+            if not overlaps(x, y, w, h):
+                detections.append({
+                    "bbox": [int(x), int(y), int(w), int(h)],
+                    "label": "Person",
+                    "confidence": 0.78,
+                    "color": (0, 255, 128)
+                })
+                detected_regions.append((x, y, w, h))
+
+    # ── 4. Car Detection ──────────────────────────────────────────────────
+    if car_cascade is not None:
+        cars = car_cascade.detectMultiScale(
+            scaled_gray, scaleFactor=1.1, minNeighbors=3, minSize=(50, 50)
+        )
+        for (x, y, w, h) in cars:
+            detections.append({
+                "bbox": [int(x), int(y), int(w), int(h)],
+                "label": "Vehicle",
+                "confidence": 0.80,
+                "color": (0, 128, 255)
             })
 
-    if all_bboxes:
-        indices = cv2.dnn.NMSBoxes(all_bboxes, all_confs, 0.35, 0.3)
-        if len(indices) > 0:
-            keep = set(indices.flatten())
-            detections = [d for i, d in enumerate(detections) if i in keep]
+    # ── 5. Thermal contour fallback (if nothing detected) ─────────────────
+    if len(detections) == 0:
+        u8 = (frame * 255).clip(0, 255).astype(np.uint8)
+        mean_val = float(u8.mean())
+        thresh_val = min(int(mean_val * 1.25), 254)
+        _, binary = cv2.threshold(u8, thresh_val, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < 1000:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            if w > W * 0.8 or h > H * 0.8:
+                continue
+            detections.append({
+                "bbox": [int(x), int(y), int(w), int(h)],
+                "label": "Object",
+                "confidence": 0.50,
+                "color": (200, 200, 0)
+            })
 
     return detections
 
@@ -123,8 +187,10 @@ def draw_detections(colored_frame, detections):
         conf = det["confidence"]
         color = det["color"]
         cv2.rectangle(out, (x, y), (x+w, y+h), color, 2)
-        cv2.putText(out, label + " " + str(conf), (x, max(y-6, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        cv2.putText(out, label + " " + str(conf),
+                    (x, max(y-6, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    color, 1, cv2.LINE_AA)
     return out
 
 def frame_to_base64(frame_bgr):
@@ -139,7 +205,7 @@ def run_pipeline(image_bytes):
         return None, "Could not read image"
 
     h, w = img.shape[:2]
-    max_dim = 400
+    max_dim = 500
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
         img = cv2.resize(img, (int(w*scale), int(h*scale)))
@@ -158,7 +224,8 @@ def run_pipeline(image_bytes):
     enhanced = ai_enhance(processed)
     enh_colored = apply_colormap(enhanced)
 
-    detections = detect_objects(enhanced)
+    # Pass original gray for Haar detection
+    detections = detect_objects(enhanced, gray)
     det_colored = draw_detections(enh_colored.copy(), detections)
 
     target_h = 200
@@ -216,11 +283,17 @@ def process():
     file = request.files['image']
     if file.filename == '':
         return jsonify({"error": "No file selected"}), 400
-    image_bytes = file.read()
-    result, error = run_pipeline(image_bytes)
-    if error:
-        return jsonify({"error": error}), 400
-    return jsonify(result)
+    try:
+        image_bytes = file.read()
+        result, error = run_pipeline(image_bytes)
+        if error:
+            return jsonify({"error": error}), 400
+        return jsonify(result)
+    except Exception as e:
+        # Log the real error server-side and return a readable message
+        # to the client instead of a bare 500 the frontend can't explain.
+        traceback.print_exc()
+        return jsonify({"error": f"Processing failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
