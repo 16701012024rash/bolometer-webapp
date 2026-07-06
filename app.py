@@ -20,8 +20,8 @@ MODEL_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
 PROTO_PATH  = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.prototxt")
 MODEL_PATH  = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.caffemodel")
 
-PROTO_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/MobileNetSSD_deploy.prototxt"
-MODEL_URL = "https://github.com/chuanqi305/MobileNet-SSD/raw/master/MobileNetSSD_deploy.caffemodel"
+PROTO_URL = "https://raw.githubusercontent.com/djmv/MobilNet_SSD_opencv/master/MobileNetSSD_deploy.prototxt"
+MODEL_URL = "https://github.com/djmv/MobilNet_SSD_opencv/raw/master/MobileNetSSD_deploy.caffemodel"
 
 # MobileNet SSD class labels
 CLASSES = [
@@ -44,29 +44,31 @@ COLOR_ANIMAL  = (255, 200, 0)
 COLOR_OBJECT  = (200, 200, 200)
 
 net = None
+net_loaded = False
 
 def load_model():
-    global net
+    global net, net_loaded
+    if net_loaded:
+        return
+    net_loaded = True
     os.makedirs(MODEL_DIR, exist_ok=True)
 
-    if not os.path.exists(PROTO_PATH):
-        print("[model] Downloading prototxt...")
-        urllib.request.urlretrieve(PROTO_URL, PROTO_PATH)
-        print("[model] Prototxt downloaded.")
+    try:
+        if not os.path.exists(PROTO_PATH):
+            print("[model] Downloading prototxt...")
+            urllib.request.urlretrieve(PROTO_URL, PROTO_PATH)
+            print("[model] Prototxt downloaded.")
 
-    if not os.path.exists(MODEL_PATH):
-        print("[model] Downloading caffemodel (~23MB)...")
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-        print("[model] Model downloaded.")
+        if not os.path.exists(MODEL_PATH):
+            print("[model] Downloading caffemodel (~23MB)...")
+            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+            print("[model] Model downloaded.")
 
-    net = cv2.dnn.readNetFromCaffe(PROTO_PATH, MODEL_PATH)
-    print("[model] MobileNet SSD loaded successfully.")
-
-try:
-    load_model()
-except Exception as e:
-    print(f"[model] Failed to load MobileNet: {e}")
-    net = None
+        net = cv2.dnn.readNetFromCaffe(PROTO_PATH, MODEL_PATH)
+        print("[model] MobileNet SSD loaded successfully.")
+    except Exception as e:
+        print(f"[model] Failed to load MobileNet: {e}")
+        net = None
 
 # ── Haar cascade fallback (face only) ────────────────────────────────────────
 
@@ -118,6 +120,9 @@ def detect_objects(frame, original_img_bgr):
     Use MobileNet SSD on the original colour image for accurate detection.
     Overlay results on the thermal frame.
     """
+    # Load model lazily on first detection call
+    load_model()
+
     H, W = frame.shape
     detections = []
 
