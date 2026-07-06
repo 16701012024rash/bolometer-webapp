@@ -1,7 +1,6 @@
 """
 Bolometer Pipeline - Flask Web App
-Upgraded with Haar Cascade face + body detection
-Fixed: proper colormap normalization for all image types
+Detection: MobileNet SSD (knows 80+ classes including person, cat, dog, car, bus)
 """
 
 from flask import Flask, request, jsonify, render_template
@@ -10,62 +9,103 @@ import cv2
 import base64
 import os
 import traceback
+import urllib.request
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 
-LOCAL_CASCADE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cascades")
+# ── MobileNet SSD Setup ───────────────────────────────────────────────────────
+
+MODEL_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
+PROTO_PATH  = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.prototxt")
+MODEL_PATH  = os.path.join(MODEL_DIR, "MobileNetSSD_deploy.caffemodel")
+
+PROTO_URL = "https://raw.githubusercontent.com/chuanqi305/MobileNet-SSD/master/MobileNetSSD_deploy.prototxt"
+MODEL_URL = "https://github.com/chuanqi305/MobileNet-SSD/raw/master/MobileNetSSD_deploy.caffemodel"
+
+# MobileNet SSD class labels
+CLASSES = [
+    "background", "aeroplane", "bicycle", "bird",   "boat",
+    "bottle",     "bus",       "car",     "cat",    "chair",
+    "cow",        "diningtable","dog",    "horse",  "motorbike",
+    "person",     "pottedplant","sheep",  "sofa",   "train",
+    "tvmonitor"
+]
+
+# Map to our 4 categories
+ANIMAL_CLASSES  = {"bird", "cat", "cow", "dog", "horse", "sheep"}
+VEHICLE_CLASSES = {"aeroplane", "bicycle", "boat", "bus", "car", "motorbike", "train"}
+PERSON_CLASSES  = {"person"}
+
+# Colors
+COLOR_PERSON  = (0, 255, 128)
+COLOR_VEHICLE = (0, 128, 255)
+COLOR_ANIMAL  = (255, 200, 0)
+COLOR_OBJECT  = (200, 200, 200)
+
+net = None
+
+def load_model():
+    global net
+    os.makedirs(MODEL_DIR, exist_ok=True)
+
+    if not os.path.exists(PROTO_PATH):
+        print("[model] Downloading prototxt...")
+        urllib.request.urlretrieve(PROTO_URL, PROTO_PATH)
+        print("[model] Prototxt downloaded.")
+
+    if not os.path.exists(MODEL_PATH):
+        print("[model] Downloading caffemodel (~23MB)...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("[model] Model downloaded.")
+
+    net = cv2.dnn.readNetFromCaffe(PROTO_PATH, MODEL_PATH)
+    print("[model] MobileNet SSD loaded successfully.")
+
+try:
+    load_model()
+except Exception as e:
+    print(f"[model] Failed to load MobileNet: {e}")
+    net = None
+
+# ── Haar cascade fallback (face only) ────────────────────────────────────────
 
 def load_cascade(filename):
-    candidates = [
-        os.path.join(LOCAL_CASCADE_DIR, filename),
-        cv2.data.haarcascades + filename,
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            clf = cv2.CascadeClassifier(path)
-            if not clf.empty():
-                return clf
-    print(f"[cascade] not found: {filename}")
+    path = cv2.data.haarcascades + filename
+    if os.path.exists(path):
+        clf = cv2.CascadeClassifier(path)
+        if not clf.empty():
+            return clf
     return None
 
-face_cascade       = load_cascade('haarcascade_frontalface_default.xml')
-eye_cascade        = load_cascade('haarcascade_eye.xml')
-body_cascade       = load_cascade('haarcascade_fullbody.xml')
-upper_body_cascade = load_cascade('haarcascade_upperbody.xml')
-car_cascade        = load_cascade('haarcascade_car.xml')
+face_cascade = load_cascade('haarcascade_frontalface_default.xml')
 
+# ── Pipeline functions ────────────────────────────────────────────────────────
 
 def to_thermal(img_gray):
     return img_gray.astype(np.float32) / 255.0
 
-
 def calibrate(frame):
-    rng = np.random.RandomState(42)
+    rng    = np.random.RandomState(42)
     gain   = 1.0 + rng.randn(*frame.shape).astype(np.float32) * 0.005
     offset =       rng.randn(*frame.shape).astype(np.float32) * 0.002
     return np.clip(gain * frame + offset, 0, 1).astype(np.float32)
 
-
 def deterministic_process(frame):
-    u8 = (frame * 255).clip(0, 255).astype(np.uint8)
+    u8       = (frame * 255).clip(0, 255).astype(np.uint8)
     filtered = cv2.bilateralFilter(u8, 9, 75, 75)
     clahe    = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(filtered)
-    return enhanced.astype(np.float32) / 255.0
-
+    return clahe.apply(filtered).astype(np.float32) / 255.0
 
 def ai_enhance(frame):
-    H, W = frame.shape
-    u8       = (frame * 255).clip(0, 255).astype(np.uint8)
-    upscaled = cv2.resize(u8, (W * 2, H * 2), interpolation=cv2.INTER_CUBIC)
-    blurred  = cv2.GaussianBlur(upscaled, (3, 3), 1.0)
+    H, W      = frame.shape
+    u8        = (frame * 255).clip(0, 255).astype(np.uint8)
+    upscaled  = cv2.resize(u8, (W * 2, H * 2), interpolation=cv2.INTER_CUBIC)
+    blurred   = cv2.GaussianBlur(upscaled, (3, 3), 1.0)
     sharpened = cv2.addWeighted(upscaled, 1.2, blurred, -0.2, 0)
     return np.clip(sharpened, 0, 255).astype(np.float32) / 255.0
 
-
 def apply_colormap(frame_norm):
-    """Percentile normalisation so both dark AND bright images render correctly."""
     lo, hi = np.percentile(frame_norm, [2, 98])
     if hi - lo < 0.01:
         hi = lo + 0.01
@@ -73,80 +113,87 @@ def apply_colormap(frame_norm):
     u8 = (normalized * 255).astype(np.uint8)
     return cv2.applyColorMap(u8, cv2.COLORMAP_INFERNO)
 
-
-def detect_objects(frame, original_gray):
+def detect_objects(frame, original_img_bgr):
+    """
+    Use MobileNet SSD on the original colour image for accurate detection.
+    Overlay results on the thermal frame.
+    """
     H, W = frame.shape
-    detections      = []
-    detected_regions = []
+    detections = []
 
-    scaled_gray = cv2.resize(original_gray, (W, H))
+    # ── MobileNet SSD ─────────────────────────────────────────────────────
+    if net is not None:
+        oh, ow = original_img_bgr.shape[:2]
+        blob = cv2.dnn.blobFromImage(
+            cv2.resize(original_img_bgr, (300, 300)),
+            0.007843, (300, 300), 127.5
+        )
+        net.setInput(blob)
+        preds = net.forward()
 
-    def overlaps(x, y, w, h):
-        for (fx, fy, fw, fh) in detected_regions:
-            if abs(x - fx) < fw and abs(y - fy) < fh:
-                return True
-        return False
+        for i in range(preds.shape[2]):
+            conf = float(preds[0, 0, i, 2])
+            if conf < 0.40:
+                continue
 
-    # 1. Face
-    if face_cascade is not None:
+            class_idx = int(preds[0, 0, i, 1])
+            if class_idx >= len(CLASSES):
+                continue
+            class_name = CLASSES[class_idx]
+
+            # Scale box back to original image size then to thermal frame size
+            box = preds[0, 0, i, 3:7] * np.array([ow, oh, ow, oh])
+            x1, y1, x2, y2 = box.astype(int)
+
+            # Scale to thermal frame (which may be 2x due to ai_enhance)
+            sx = W / ow
+            sy = H / oh
+            tx1 = max(0, int(x1 * sx))
+            ty1 = max(0, int(y1 * sy))
+            tx2 = min(W, int(x2 * sx))
+            ty2 = min(H, int(y2 * sy))
+            tw  = tx2 - tx1
+            th  = ty2 - ty1
+
+            if tw < 5 or th < 5:
+                continue
+
+            # Map to our category
+            if class_name in PERSON_CLASSES:
+                label = "Person"
+                color = COLOR_PERSON
+            elif class_name in VEHICLE_CLASSES:
+                label = "Vehicle"
+                color = COLOR_VEHICLE
+            elif class_name in ANIMAL_CLASSES:
+                label = "Animal"
+                color = COLOR_ANIMAL
+            else:
+                label = class_name.capitalize()
+                color = COLOR_OBJECT
+
+            detections.append({
+                "bbox":       [tx1, ty1, tw, th],
+                "label":      label,
+                "confidence": round(conf, 2),
+                "color":      color,
+            })
+
+    # ── Haar face fallback if MobileNet found nothing ─────────────────────
+    if len(detections) == 0 and face_cascade is not None:
+        gray = cv2.cvtColor(original_img_bgr, cv2.COLOR_BGR2GRAY)
+        scaled_gray = cv2.resize(gray, (W, H))
         faces = face_cascade.detectMultiScale(
-            scaled_gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+            scaled_gray, scaleFactor=1.1, minNeighbors=5, minSize=(25, 25))
         for (x, y, w, h) in faces:
-            detections.append({"bbox": [int(x), int(y), int(w), int(h)],
-                                "label": "Person", "confidence": 0.92,
-                                "color": (0, 255, 128)})
-            detected_regions.append((x, y, w, h))
-
-    # 2. Upper body
-    if upper_body_cascade is not None:
-        for (x, y, w, h) in upper_body_cascade.detectMultiScale(
-                scaled_gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30)):
-            if not overlaps(x, y, w, h):
-                detections.append({"bbox": [int(x), int(y), int(w), int(h)],
-                                    "label": "Person", "confidence": 0.82,
-                                    "color": (0, 255, 128)})
-                detected_regions.append((x, y, w, h))
-
-    # 3. Full body
-    if body_cascade is not None:
-        for (x, y, w, h) in body_cascade.detectMultiScale(
-                scaled_gray, scaleFactor=1.05, minNeighbors=3, minSize=(30, 60)):
-            if not overlaps(x, y, w, h):
-                detections.append({"bbox": [int(x), int(y), int(w), int(h)],
-                                    "label": "Person", "confidence": 0.78,
-                                    "color": (0, 255, 128)})
-                detected_regions.append((x, y, w, h))
-
-    # 4. Car
-    if car_cascade is not None:
-        for (x, y, w, h) in car_cascade.detectMultiScale(
-                scaled_gray, scaleFactor=1.1, minNeighbors=3, minSize=(50, 50)):
-            detections.append({"bbox": [int(x), int(y), int(w), int(h)],
-                                "label": "Vehicle", "confidence": 0.80,
-                                "color": (0, 128, 255)})
-
-    # 5. Thermal contour fallback
-    if len(detections) == 0:
-        u8 = (frame * 255).clip(0, 255).astype(np.uint8)
-        mean_val  = float(u8.mean())
-        thresh_val = min(int(mean_val * 1.25), 254)
-        _, binary  = cv2.threshold(u8, thresh_val, 255, cv2.THRESH_BINARY)
-        kernel     = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        binary     = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < 1000:
-                continue
-            x, y, w, h = cv2.boundingRect(cnt)
-            if w > W * 0.8 or h > H * 0.8:
-                continue
-            detections.append({"bbox": [int(x), int(y), int(w), int(h)],
-                                "label": "Object", "confidence": 0.50,
-                                "color": (200, 200, 0)})
+            detections.append({
+                "bbox":       [int(x), int(y), int(w), int(h)],
+                "label":      "Person",
+                "confidence": 0.85,
+                "color":      COLOR_PERSON,
+            })
 
     return detections
-
 
 def draw_detections(colored_frame, detections):
     out = colored_frame.copy()
@@ -154,16 +201,14 @@ def draw_detections(colored_frame, detections):
         x, y, w, h = det["bbox"]
         color = det["color"]
         cv2.rectangle(out, (x, y), (x+w, y+h), color, 2)
-        cv2.putText(out, det["label"] + " " + str(det["confidence"]),
-                    (x, max(y-6, 12)),
+        label_text = det["label"] + " " + str(det["confidence"])
+        cv2.putText(out, label_text, (x, max(y-6, 12)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     return out
-
 
 def frame_to_base64(frame_bgr):
     _, buffer = cv2.imencode('.png', frame_bgr)
     return base64.b64encode(buffer).decode('utf-8')
-
 
 def run_pipeline(image_bytes):
     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -183,7 +228,9 @@ def run_pipeline(image_bytes):
     calibrated = calibrate(raw)
     processed  = deterministic_process(calibrated)
     enhanced   = ai_enhance(processed)
-    detections = detect_objects(enhanced, gray)
+
+    # Detect on original colour image for accuracy
+    detections = detect_objects(enhanced, img)
 
     raw_colored  = apply_colormap(raw)
     cal_colored  = apply_colormap(calibrated)
@@ -199,7 +246,7 @@ def run_pipeline(image_bytes):
     stages = [resize_to_h(s, target_h)
               for s in [raw_colored, cal_colored, proc_colored, enh_colored, det_colored]]
 
-    sep = np.ones((target_h, 3, 3), dtype=np.uint8) * 50
+    sep   = np.ones((target_h, 3, 3), dtype=np.uint8) * 50
     parts = []
     for i, s in enumerate(stages):
         parts.append(s)
@@ -231,11 +278,9 @@ def run_pipeline(image_bytes):
         "count": len(detections),
     }, None
 
-
 @app.route('/')
 def index():
     return render_template('index.html')
-
 
 @app.route('/process', methods=['POST'])
 def process():
@@ -252,7 +297,6 @@ def process():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Processing failed: {str(e)}"}), 500
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
